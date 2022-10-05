@@ -1,0 +1,33 @@
+{
+  "name": "ssh-proxy",
+  "version": "0.1.0",
+  "description": "Http and socks proxy server over ssh tunnel",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mutagen-d/ssh-proxy.git"
+  },
+  "bin": "index.js",
+  "keywords": [
+    "proxy",
+    "server",
+    "ssh",
+    "ssh2",
+    "http",
+    "socks",
+    "socks4",
+    "socks4a",
+    "socks5",
+    "socks5h"
+  ],
+  "author": "mutagen-d",
+  "license": "ISC",
+  "dependencies": {
+    "@mutagen-d/node-proxy-server": "^1.0.1",
+    "ssh2": "^1.11.0",
+    "yargs": "^17.6.0"
+  }
+}
