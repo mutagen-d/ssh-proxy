@@ -8,6 +8,8 @@ const { Client } = require('ssh2')
 const yargs = require('yargs/yargs')
 const { hideBin } = require('yargs/helpers');
 
+const time = () => new Date().toISOString();
+
 const argv = yargs(hideBin(process.argv))
   .usage(`ssh-proxy [-D [<bind-address>:]<port>] [-h <ssh-host>] [-p <ssh-port>] [-u <ssh-user>] [-P <ssh-password>] [-k <keep-alive-interval>] [--verbose] [-identity <ssh-priv-key-file-path>] [[<ssh-user>@]<ssh-host>]`)
   .options('dynamic', {
@@ -78,7 +80,39 @@ const verbose = (fn, ...args) => {
   }
 }
 
-const ssh = { client: new Client(), options: {} }
+class SSHClient {
+  /** @param {import('ssh2').ConnectConfig} options */
+  constructor(options) {
+    this.options = options;
+    this.init()
+  }
+  init() {
+    this.client = new Client();
+    const forwardOut = util.promisify(this.client.forwardOut);
+    /** @type {typeof forwardOut} */
+    this.forwardOut = forwardOut.bind(this.client)
+    this.client.on('error', (e) => console.log(time(), e))
+    this.client.on('connect', onVerbose(() => console.log(time(), 'ssh connected')))
+    this.client.on('ready', onVerbose(() => console.log(time(), 'ssh ready')))
+  }
+  destroy() {
+    if (this.client) {
+      return this.client.destroy()
+    }
+  }
+  connect() {
+    this.client.connect(this.options)
+    return new Promise((resolve) => this.client.once('ready', resolve))
+  }
+  restart() {
+    this.destroy()
+    this.init()
+    return this.connect()
+  }
+}
+
+const ssh = new SSHClient();
+
 {
   let { user, host } = argv;
   if (argv._[0]) {
@@ -96,7 +130,7 @@ const ssh = { client: new Client(), options: {} }
   }
 }
 verbose(() => {
-  console.log('options', {
+  console.log(time(), 'options', {
     dynamic: argv.dynamic,
     host: ssh.options.host,
     port: ssh.options.port,
@@ -107,18 +141,30 @@ verbose(() => {
   })
 })
 
-const forwardOut = util.promisify(ssh.client.forwardOut)
 const server = createProxyServer({
-  createProxyConnection: (info) => {
-    return forwardOut.call(ssh.client, info.srcHost, info.srcPort, info.dstHost, info.dstPort);
+  createProxyConnection: async (info) => {
+    try {
+      const conn = await ssh.forwardOut(info.srcHost, info.srcPort, info.dstHost, info.dstPort);
+      return conn;
+    } catch (e) {
+      if (e.message === 'Not connected') {
+        await ssh.restart()
+        return ssh.forwardOut(info.srcHost, info.srcPort, info.dstHost, info.dstPort);
+      }
+      throw e;
+    }
   },
 })
 
 verbose(() => {
   server.on('connection', (socket) => {
     const { remoteAddress: host, remotePort: port } = socket;
-    console.log('connected from', `${host}:${port}`)
-    socket.on('close', () => console.log('disconnected', `${host}:${port}`))
+    console.log(time(), 'connected from', `${host}:${port}`)
+    socket.on('close', () => console.log(time(), 'disconnected', `${host}:${port}`))
+  })
+  server.on('proxy-connection', (_, info) => {
+    const { dstHost, dstPort } = info;
+    console.log(time(), 'connected to', `${dstHost}:${dstPort}`)
   })
 })
 
@@ -128,24 +174,14 @@ if (argv.keepalive) {
   })
 }
 
-server.on('error', (error) => console.error(error))
+server.on('error', (error) => console.error(time(), error))
 
-ssh.client.connect(ssh.options)
-ssh.client.on('end', () => {
-  verbose(() => console.log('ssh client disconnected'))
-  if (server.listening) {
-    verbose(() => console.log('ssh client reconnecting'))
-    ssh.client.connect(ssh.options)
-  }
+server.on('close', onVerbose(() => console.log(time(), 'server closed')))
+
+const dynamic = argv.dynamic.split(':');
+const port = dynamic.pop();
+const hostname = dynamic.pop() || '0.0.0.0';
+
+ssh.connect().then(() => {
+  server.listen(port, hostname, () => console.log(time(), 'server listening on port', port))
 })
-
-ssh.client.on('ready', () => {
-  verbose(() => console.log('ssh client ready'))
-  const dynamic = argv.dynamic.split(':');
-  const port = dynamic.pop();
-  const hostname = dynamic.pop() || '0.0.0.0';
-  server.listen(port, hostname, onVerbose(() => console.log('server listening on port', port)))
-})
-ssh.client.on('error', (error) => console.error(error))
-
-server.on('close', onVerbose(() => console.log('server closed')))
